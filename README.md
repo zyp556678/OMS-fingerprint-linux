@@ -1,125 +1,168 @@
-# OMS fingerprint module — Linux driver
+# OMS 指纹模块 Linux 驱动 — Ubuntu 打包 & 图形管理器
 
-Reverse engineering project for the **Jiangxi OMS Microelectronics fingerprint
-module (`33a7:2388`)** that ships in several laptops and has no Linux driver.
-The goal is a proper [libfprint](https://fprint.freedesktop.org/) driver so the
-reader works with `fprintd`, PAM and the desktop environments.
+让 **OMS/欧菲光 Match-on-Chip 指纹模块（USB `33a7:2388`）** 在 Linux 上可用的完整方案：
 
-**Status: the driver works on real hardware** — `fprintd-enroll` and
-`fprintd-verify` pass, and a hardware-free umockdev regression test is included.
-An upstream merge request (patch) is prepared in [`driver/upstream/`](./driver/upstream).
+- 🔧 **驱动**：基于 [BlueApple233/OMS-fingerprint-linux](https://github.com/BlueApple233/OMS-fingerprint-linux) 逆向实现的 libfprint `omsmoc` 驱动（已真机验证）
+- 📦 **一键 deb**：`libfprint-2-omsmoc` —— 驱动 + 图形管理器 + 工具，适用 Ubuntu 24.04+ / 26.04（amd64）
+- 🖥️ **图形管理器**：录入 / 删除 / 重命名指纹、查看与关联芯片内已有模板（Windows 时期录入的也能直接复用）
+- 🛠️ **oms-import 工具**：芯片模板 ↔ fprintd 存储映射管理（命令行，GUI 的后端）
+- ⚡ **udev 规则**：保持设备供电（该芯片无法承受 USB autosuspend）+ 本地用户访问
 
+> 适用机型（带同款模块即可）：机械革命 无界14 Pro（MECHREVO WUJIE14 Pro）、神舟/迈本等使用 `33a7:2388` 的机型。
+> 上游驱动源码与逆向文档（RE 笔记、协议细节、umockdev 测试）见 [docs/upstream-README.md](docs/upstream-README.md)。
+
+---
+
+## 一、安装（推荐：deb）
+
+从 [Releases](../../releases) 或 `dist/` 下载 `libfprint-2-omsmoc_*.deb`，然后：
+
+```bash
+sudo dpkg -i libfprint-2-omsmoc_1.94.100-1omsmoc3_amd64.deb
+sudo pam-auth-update --enable fprintd     # 启用 PAM 指纹认证（登录/sudo，密码兜底保留）
 ```
-$ fprintd-enroll          → Enroll result: enroll-completed
-$ fprintd-verify          → Verify result: verify-match (done)
-$ meson test omsmoc       → 1/1 drivers+custom - libfprint:omsmoc OK
-```
 
-## The device
+打开 **「OMS 指纹管理器」**（应用菜单搜索"指纹"，或终端运行 `oms-fprint-manager`）：
 
-| | |
+1. **新增指纹** → 选手指 → 按提示按压/抬起（6 阶段）；
+2. 芯片里已有旧模板（如 Windows 时期录入）→ 点「**芯片模板…**」关联到手指，**无需重新录入**；
+3. 也可以随时**重命名**（更换归属）或**删除**。
+
+### 安装包做了什么
+
+| 路径 | 说明 |
 |---|---|
-| USB ID | `33a7:2388` (Jiangxi OMS Microelectronics / OFilm) |
-| Endpoints | EP1 OUT `0x01` / EP1 IN `0x81`, bulk, 64 bytes |
-| Matching | **Match-on-Chip** — the chip stores up to 16 templates and does the matching, so no fingerprint algorithm is needed on the host |
-| Firmware | vendor flash tooling only (not part of this repository) |
+| `/usr/local/lib/x86_64-linux-gnu/libfprint-2.so.*` | 打进 omsmoc 驱动的 libfprint 1.94.100（动态加载器优先于发行版库） |
+| `/usr/bin/oms-fprint-manager` | 图形管理器（GTK4/libadwaita，中文界面） |
+| `/usr/sbin/oms-import` | 特权助手（芯片模板列出/导入/重命名） |
+| `/etc/udev/rules.d/60-oms-fingerprint.rules` | 供电保持 + 用户访问（conffile） |
 
-## Protocol (reverse engineered)
+**设计要点**：驱动库影子安装到 `/usr/local`，**不与发行版 `libfprint-2-2` 冲突**，系统升级不受影响；卸载后 `fprintd` 自动回退到发行版库。
 
-Two layered and completely plain text (the vendor Windows driver uses no
-handshake, no key exchange and no encryption either):
+---
 
-```
-① transport   8 byte "USBC" request header + 4 byte "USBS" acknowledgement
-              (00 40 = write 64 / 80 40 = read 64 / 80 20 = poll 32)
-② frames      64 byte "EF01" frames, last two data bytes = 16 bit checksum
+## 二、图形管理器（增 / 删 / 改）
 
-commands      0x34 chip serial · 0x1d template count · 0x1f index table
-              0x32 identify · 0x31 enroll · 0x0c delete/clear · 0x30 cancel
-identify      00 01 … = finger captured (NOT a match)
-              00 05 00 SS 03 e8 = matched template in slot SS
-              09 05 … = no match
-```
+| 操作 | 说明 |
+|---|---|
+| **增** 新增指纹 | 选择手指 → 开始录入 → 中文阶段提示 + 进度条；重复录入芯片会查重提示 |
+| **删** 删除指纹 | 列表内删除按钮（确认框），同时删除芯片内模板 ⚠️ 不可恢复 |
+| **改** 重命名 | 更换手指归属，**模板不动、无需重新录入** |
+| **改** 芯片模板 | 查看槽位（0–15）、关联未归属模板、更换已归属模板；读取/写入需一次授权 |
+| 其他 | 设备状态显示、错误中文提示、一键刷新 |
 
-The transport, the command parameters and the response semantics (including the
-timing rules and the frame checksum) are documented in
-[`driver/omsmoc.c`](./driver/omsmoc.c) (file header), and in
-[`driver/README.md`](./driver/README.md) together with the hardware pitfalls
-(autosuspend, wedged firmware, the status of every implemented command).
+---
 
-## Repository layout
-
-```
-README.md                  this file
-driver/                    the libfprint driver and its tooling
-  omsmoc.c/.h              driver source (upstream style, fpi_device + fpi_ssm)
-  tools/oms-smoke.c        bring-up tool (info/verify/identify/enroll/list/delete/clear)
-  tests/omsmoc/            umockdev regression test + sanitized recorded traffic
-  tests/sanitize-capture.py scrub device identifying data from a new recording
-  upstream/                ready-to-submit upstream patch, steps and issue/request text
-  libfprint-oms.patch      same changes as a plain patch for a local build tree
-  setup.sh                 fetch libfprint, apply patch, build, run the test
-  README.md                build, debug, test, PAM and device notes
-aur/                       Arch package (libfprint + this driver) as a stop-gap
-LICENSE                    LGPL-2.1-or-later
-```
-
-## Building and testing
+## 三、命令行工具
 
 ```bash
-driver/setup.sh --test        # fetch libfprint 1.94.100, build, run the umockdev test
+# fprintd 标准命令
+fprintd-list $(whoami)                 # 查看已录入指纹
+fprintd-verify -f any $(whoami)        # 验证任意指纹
+fprintd-enroll                         # 录入新指纹（终端交互）
+
+# oms-import：芯片模板管理（需要 root）
+sudo oms-import $USER --list                          # JSON：芯片槽位 + 关联
+sudo oms-import $USER --slot 0=left-index --slot 1=right-thumb
+sudo oms-import $USER --rename left-index=left-thumb  # 重命名（也可用数字 1..10）
 ```
 
-Requirements: `meson ninja gcc glib2 glib2-devel gusb libusb cairo pixman nss
-gobject-introspection umockdev` (Arch names).
+手指名：`left-thumb / left-index / left-middle / left-ring / left-little / right-thumb / right-index / right-middle / right-ring / right-little`（或数字 `1..10`）。
 
-Hardware bring-up (real device, uses the built libfprint):
+---
+
+## 四、从源码构建
+
+在 Ubuntu 24.04+ / 26.04 上：
 
 ```bash
-B=build/libfprint-build
-$B/examples/oms-smoke info                 # open and print device state
-$B/examples/oms-smoke verify 30 --slot 0   # press an enrolled finger
-$B/examples/oms-smoke enroll 120           # press/lift 6 times
-$B/examples/oms-smoke list                 # templates on the chip
-$B/examples/oms-smoke delete <slot>        # delete one template
+# 1) 构建依赖
+sudo apt install meson ninja-build curl libglib2.0-dev libgusb-dev libusb-1.0-0-dev \
+    libcairo2-dev libpixman-1-dev libnss3-dev libssl-dev libgudev-1.0-dev \
+    gobject-introspection libgirepository1.0-dev umockdev libumockdev-dev python3-usb \
+    python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 pkexec
+
+# 2) 拉取 libfprint + omsmoc 驱动并构建（含无硬件回放测试）
+driver/setup.sh --test
+
+# 3) 重新打包 deb（会按需重建 libfprint/oms-import）
+deb/build-deb.sh
+# 产物：dist/libfprint-2-omsmoc_<版本>_amd64.deb
 ```
 
-## Upstream status
+> 说明：`deb/build-deb.sh` 编译 `helper/oms-import.c` 需要 `pkg-config` 能找到 `libfprint-2`
+> （即系统已安装本 deb，或安装了 libfprint 开发包）。
 
-The driver, the umockdev test case and the `hwdb` entries are ready as a single
-patch in [`driver/upstream/`](./driver/upstream). It applies to upstream master,
-builds there without warnings and passes the replay test. Not submitted yet.
+---
 
-## ⚠️ Device notes
+## 五、工作原理（简述）
 
-* Never send an incomplete `USBC` sequence (header without data, or a bare
-  `EF01` frame): it wedges the firmware.
-* This device does **not** survive kernel autosuspend: it must stay powered
-  (`power/control=on`) while a driver is being developed or used, e.g.
+- **匹配在芯片端完成**（Match-on-Chip）：芯片闪存最多存 16 枚模板，主机不接触指纹图像/特征；
+- 协议为明文 `USBC` 传输头 + `EF01` 帧（批量端点），命令：`0x34` 序列号 / `0x1d,0x1f` 模板表 / `0x32` 识别·录入 / `0x31` 写入 / `0x0c` 删除 / `0x30` 取消；
+- **模板 ↔ 用户/手指** 的关联存放在 fprintd 存储（`/var/lib/fprint/<用户>/omsmoc/<设备ID>/<手指编号>`），本仓库的 `oms-import` 负责读写这份关联；
+- 匹配阈值/算法均由芯片固件决定，Linux 端只负责协议与状态机。
 
-  ```
-  ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="33a7", ATTR{idProduct}=="2388", \
-      TAG+="uaccess", ATTR{power/control}="on"
-  ```
+---
 
-* A wedged device (bulk transfers time out, enumeration still fine) recovers
-  with a USB port reset, which can be done without root:
+## 六、常见问题
 
-  ```bash
-  python -c "import usb.core; usb.core.find(idVendor=0x33a7, idProduct=0x2388).reset()"
-  ```
+<details>
+<summary><b>设备卡死（suspend/resume 后报错、bulk 超时）</b></summary>
 
-* Templates live in the chip only — treat them as the one irreplaceable state.
+该芯片扛不住 USB autosuspend（本包已装 udev 规则保持 `power/control=on`）。
+若已卡死，用 USB 端口复位恢复：
 
-## Compliance
+```bash
+python3 -c "import usb.core; usb.core.find(idVendor=0x33a7, idProduct=0x2388).reset()"
+```
+（需要 `python3-usb`；若枚举成 `1234:abce` 引导模式，需厂商烧录工具恢复，芯片内模板会丢失）
+</details>
 
-This is interoperability reverse engineering of hardware owned by the author.
-No vendor binaries, firmware or raw captures are included in this repository;
-the test recording shipped in `driver/tests/` has device identifying data
-(chip serial, USB serial) removed. If you want to reproduce the captures, use
-your own device and the vendor driver obtained from your hardware vendor.
+<details>
+<summary><b>删除/清空的风险</b></summary>
 
-## License
+模板是芯片内唯一不可再生数据：删除后只能重新录入。GUI 删除按钮与 `oms-import` 都会真实操作芯片，请确认后再执行。
+</details>
 
-GNU Lesser General Public License 2.1 or later — see [`LICENSE`](./LICENSE),
-the same license as libfprint so the driver can be merged upstream.
+<details>
+<summary><b>Windows 录入的指纹能用吗？</b></summary>
+
+能。模板存在芯片里、跨系统共用；用「芯片模板…」把槽位关联到手指即可（`sudo oms-import --list` 查看槽位）。
+</details>
+
+<details>
+<summary><b>卸载 / 回退</b></summary>
+
+```bash
+sudo apt remove libfprint-2-omsmoc        # 移除库+GUI+规则+工具，fprintd 自动回退发行版库
+sudo pam-auth-update --disable fprintd    # 关闭 PAM 指纹（可选）
+sudo rm -rf /var/lib/fprint/$USER         # 清理 fprintd 存储记录（可选）
+```
+</details>
+
+---
+
+## 七、仓库结构
+
+```
+├── README.md                 # 本文件
+├── docs/upstream-README.md   # 上游项目原始 README（驱动源码/逆向文档入口）
+├── SETUP-NOTES.md            # 本方案的完整安装笔记（含回退步骤）
+├── driver/                   # 上游驱动源码、测试、上游补丁（原样保留）
+├── aur/                      # 上游 Arch 包（原样保留）
+├── gui/                      # 图形管理器（GTK4/libadwaita，Python）
+├── helper/oms-import.c       # 特权助手源码（芯片模板管理）
+├── deb/build-deb.sh          # deb 打包脚本
+├── dist/                     # 预构建 deb（Releases 同款）
+└── LICENSE                   # LGPL-2.1
+```
+
+---
+
+## 八、来源与致谢
+
+- **驱动逆向实现**：[BlueApple233/OMS-fingerprint-linux](https://github.com/BlueApple233/OMS-fingerprint-linux)（LGPL-2.1）——`omsmoc` 驱动、协议分析、umockdev 回放测试均来自该项目；
+- 本仓库在其基础上增加：Ubuntu deb 打包、图形管理器、`oms-import` 模板管理工具、文档；
+- 上游尚未合并入 libfprint 主线：本方案采用「影子安装」方式让 fprintd 用上该驱动，待上游合并后可平滑移除。
+
+**License**：[LGPL-2.1-or-later](LICENSE)（与上游一致）。

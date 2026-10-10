@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=OMS Fingerprint Manager
+Name[zh_CN]=OMS 指纹管理器
+Comment=Manage enrolled fingerprints (enroll, delete, rename, chip slots)
+Comment[zh_CN]=管理指纹的录入、删除、重命名与芯片模板关联
+Exec=oms-fprint-manager
+Icon=auth-fingerprint-symbolic
+Terminal=false
+Categories=Settings;System;
+Keywords=fingerprint;biometric;指纹;
+StartupNotify=true

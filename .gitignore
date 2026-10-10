@@ -61,3 +61,11 @@ build/
 /captures/
 /prototype/
 /tools/
+
+# --- 本仓库新增：下游打包与工具 ---
+# 构建日志
+/logs/
+# deb 打包的暂存目录
+/deb/pkgroot/
+# helper 编译产物（源码在 helper/oms-import.c，由 deb/build-deb.sh 重建）
+/helper/oms-import
