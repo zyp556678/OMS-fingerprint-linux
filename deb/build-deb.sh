@@ -19,7 +19,7 @@ REPO=$(cd "$HERE/.." && pwd)
 
 BUILD_DIR="$REPO/build/libfprint-build"
 LIBFPRINT_VER=1.94.100
-PKGVER="${LIBFPRINT_VER}-1omsmoc3"
+PKGVER="${LIBFPRINT_VER}-1omsmoc4"
 ARCH=$(dpkg --print-architecture)
 PKG="$HERE/pkgroot"
 OUT_DIR="$REPO/dist"
@@ -50,6 +50,7 @@ mkdir -p "$PKG/DEBIAN" \
          "$PKG/usr/sbin" \
          "$PKG/usr/share/applications" \
          "$PKG/etc/udev/rules.d" \
+         "$PKG/etc/pam.d" \
          "$PKG/usr/share/doc/libfprint-2-omsmoc"
 
 install -m 0644 "$LIB" "$PKG/usr/local/lib/x86_64-linux-gnu/libfprint-2.so.2.0.0"
@@ -59,6 +60,10 @@ install -m 0755 "$IMPORT" "$PKG/usr/sbin/oms-import"
 install -m 0755 "$REPO/gui/oms-fprint-manager.py" "$PKG/usr/bin/oms-fprint-manager"
 install -m 0644 "$REPO/gui/oms-fprint-manager.desktop" \
         "$PKG/usr/share/applications/oms-fprint-manager.desktop"
+
+# PAM 集成修复（KDE 锁屏双通道竞争 / kwallet 阻塞；详见仓库 pam/ 与 README）
+install -m 0644 "$REPO/pam/kde" "$PKG/etc/pam.d/kde"
+install -m 0644 "$REPO/pam/kde-fingerprint" "$PKG/etc/pam.d/kde-fingerprint"
 
 cat > "$PKG/etc/udev/rules.d/60-oms-fingerprint.rules" <<'EOF'
 # OMS fingerprint module 33a7:2388: keep powered, disable persist, allow local user access
@@ -117,6 +122,18 @@ libfprint-2-omsmoc — OMS Match-on-Chip 指纹驱动（33a7:2388）
      sudo oms-import $USER --rename 2=7
      sudo oms-import $USER --list
 
+KDE 锁屏 / GDM 登录界面修复（已随包安装）
+----------------------------------------
+* /etc/pam.d/kde：锁屏的「密码服务」不再包含 pam_fprintd，
+  避免与 kde-fingerprint 服务双通道争抢指纹设备；
+* /etc/pam.d/kde-fingerprint：指纹通道去掉 pam_kwallet5
+  （指纹没有密码，其密码提示会阻塞认证完成）；
+* 重试次数：sudo/polkit（common-auth）与登录界面统一为 3 次
+  （postinst 幂等修正；也可用仓库 pam/apply-pam-fixes.sh 手动应用）。
+
+以上修复来自真机排障，对应症状：锁屏指纹按下无效 / 需按回车才解锁 /
+输密码卡约 10 秒 / sudo 只有 1 次指纹机会。
+
 注意事项
 --------
 * 芯片模板是唯一不可再生数据，删除（GUI/fprintd/oms-smoke clear）
@@ -148,6 +165,19 @@ if command -v udevadm >/dev/null 2>&1; then
         --attr-match=idVendor=33a7 --attr-match=idProduct=2388 2>/dev/null || true
 fi
 
+# 指纹重试次数统一为 3 次（幂等；详见仓库 pam/README 说明）
+if [ -f /usr/share/pam-configs/fprintd ]; then
+    sed -i 's/max-tries=1/max-tries=3/' /usr/share/pam-configs/fprintd 2>/dev/null || true
+fi
+if [ -f /etc/pam.d/common-auth ]; then
+    sed -i 's/pam_fprintd\.so max-tries=1 timeout=10/pam_fprintd.so max-tries=3 timeout=10/' \
+        /etc/pam.d/common-auth 2>/dev/null || true
+fi
+if [ -f /etc/pam.d/gdm-fingerprint ]; then
+    sed -i 's|^\(auth[[:space:]]\+required[[:space:]]\+pam_fprintd\.so\)\( debug\)\?$|\1 max-tries=3|' \
+        /etc/pam.d/gdm-fingerprint 2>/dev/null || true
+fi
+
 # Make a running daemon pick up the newly installed library right away.
 if command -v systemctl >/dev/null 2>&1; then
     systemctl try-restart fprintd.service 2>/dev/null || true
@@ -173,7 +203,11 @@ exit 0
 EOF
 
 chmod 0755 "$PKG/DEBIAN/postinst" "$PKG/DEBIAN/postrm"
-echo "/etc/udev/rules.d/60-oms-fingerprint.rules" > "$PKG/DEBIAN/conffiles"
+cat > "$PKG/DEBIAN/conffiles" <<'EOF'
+/etc/udev/rules.d/60-oms-fingerprint.rules
+/etc/pam.d/kde
+/etc/pam.d/kde-fingerprint
+EOF
 
 # ---------------------------------------------------------------- control
 INSTALLED_SIZE=$(du -sk "$PKG" | cut -f1)
@@ -201,6 +235,10 @@ Description: libfprint with the OMS match-on-chip fingerprint driver (33a7:2388)
  the "OMS Fingerprint Manager" GUI (list/enroll/delete/rename
  fingerprints and re-map on-chip templates) and oms-import(8), its
  privileged helper.
+ .
+ Ships PAM integration fixes for the KDE lock screen and GDM login
+ (single fingerprint path, no blocking kwallet prompt) and raises
+ the fingerprint retry count to 3 for sudo/polkit.
 EOF
 
 # ---------------------------------------------------------------- build

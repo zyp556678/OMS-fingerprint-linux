@@ -5,11 +5,11 @@
 
 ## 安装方式（已完成的改动）
 
-**deb 包**：`dist/libfprint-2-omsmoc_1.94.100-1omsmoc3_amd64.deb`
+**deb 包**：`dist/libfprint-2-omsmoc_1.94.100-1omsmoc4_amd64.deb`
 （可复制到其他机器的共享目录）
 
 ```bash
-sudo dpkg -i libfprint-2-omsmoc_1.94.100-1omsmoc3_amd64.deb
+sudo dpkg -i libfprint-2-omsmoc_1.94.100-1omsmoc4_amd64.deb
 ```
 
 包内容：
@@ -41,6 +41,18 @@ sudo oms-import $USER --slot 0=left-index --slot 1=right-index   # 导入芯片�
 
 > 技术实现：GTK4 + libadwaita（Python），指纹操作走 fprintd D-Bus（标准流程），
 > 芯片模板/重命名通过 pkexec 调 `/usr/sbin/oms-import` 完成。
+
+## 锁屏 / 登录界面修复（2026-10-12）
+
+| 症状 | 修复 |
+|---|---|
+| 锁屏指纹按下无效 / 需回车 / 输密码卡约 10 秒 | `/etc/pam.d/kde` 覆盖：密码服务去掉 pam_fprintd（防止与 kde-fingerprint 双通道争抢设备） |
+| 指纹匹配后需按一次回车才解锁 | `/etc/pam.d/kde-fingerprint` 覆盖：去掉阻塞认证的 pam_kwallet5（指纹无密码可取） |
+| sudo / polkit 只有 1 次指纹机会 | max-tries 统一为 3（common-auth + pam-configs 持久化 + gdm-fingerprint 显式） |
+
+- 重试规则：**按压未匹配**才会重试（每次认证最多 3 次）；**全程未按**则超时结束回落密码（锁屏 30s/次、sudo 与 polkit 10s/次）。
+- 复现/迁移：配置文件存于仓库 `pam/`，可跑 `sudo pam/apply-pam-fixes.sh`；deb（omsmoc4 起）已内置。
+- 排障方法存档：fprintd 加 `G_MESSAGES_DEBUG=all` drop-in、pam_fprintd 加 `debug` 参数、`pamtester <服务> <用户> authenticate` 分层测试（均已清理，需要时再加）。
 
 ## 源码与工具
 

@@ -53,7 +53,21 @@ sudo pam-auth-update --enable fprintd     # 启用 PAM 指纹认证（登录/sud
 
 ---
 
-## 三、命令行工具
+## 三、锁屏 / 登录界面（KDE / GDM）与重试
+
+本仓库的 deb 会随包安装以下 PAM 集成修复（真机排障所得）；手动安装时可运行 `sudo pam/apply-pam-fixes.sh`：
+
+| 症状 | 原因 | 修复 |
+|---|---|---|
+| 锁屏指纹提示出现但按下无效 / 需回车 / 输密码卡约 10 秒 | KDE 锁屏并发运行 `kde-fingerprint` 与 `kde`（密码）两套 PAM 事务，`common-auth` 里的 pam_fprintd 使二者争抢设备 | `/etc/pam.d/kde` 覆盖文件：密码服务不再加载 pam_fprintd，指纹只走 KDE 官方通道 |
+| 指纹匹配后仍需按一次回车才解锁 | `kde-fingerprint` 认证链里的 `pam_kwallet5` 在等密码提示（指纹没有密码可取），阻塞了事务完成 | `/etc/pam.d/kde-fingerprint` 覆盖文件：去掉该阻塞模块（钱包会话阶段不受影响） |
+| sudo / polkit 授权框只有 1 次指纹机会 | Ubuntu 默认配置 `max-tries=1` | 统一为 **3 次**（common-auth + pam-configs 持久化 + GDM 显式 3 次） |
+
+> 重试规则：**按了但没匹配上**才会重试（每次认证最多 3 次）；**完全没有按压**则超时结束并回落到密码（锁屏 30 秒/次、sudo 与 polkit 10 秒/次）。
+
+---
+
+## 四、命令行工具
 
 ```bash
 # fprintd 标准命令
@@ -71,7 +85,7 @@ sudo oms-import $USER --rename left-index=left-thumb  # 重命名（也可用数
 
 ---
 
-## 四、从源码构建
+## 五、从源码构建
 
 在 Ubuntu 24.04+ / 26.04 上：
 
@@ -95,7 +109,7 @@ deb/build-deb.sh
 
 ---
 
-## 五、工作原理（简述）
+## 六、工作原理（简述）
 
 - **匹配在芯片端完成**（Match-on-Chip）：芯片闪存最多存 16 枚模板，主机不接触指纹图像/特征；
 - 协议为明文 `USBC` 传输头 + `EF01` 帧（批量端点），命令：`0x34` 序列号 / `0x1d,0x1f` 模板表 / `0x32` 识别·录入 / `0x31` 写入 / `0x0c` 删除 / `0x30` 取消；
@@ -104,7 +118,7 @@ deb/build-deb.sh
 
 ---
 
-## 六、常见问题
+## 七、常见问题
 
 <details>
 <summary><b>设备卡死（suspend/resume 后报错、bulk 超时）</b></summary>
@@ -142,7 +156,7 @@ sudo rm -rf /var/lib/fprint/$USER         # 清理 fprintd 存储记录（可选
 
 ---
 
-## 七、仓库结构
+## 八、仓库结构
 
 ```
 ├── README.md                 # 本文件
@@ -152,6 +166,7 @@ sudo rm -rf /var/lib/fprint/$USER         # 清理 fprintd 存储记录（可选
 ├── aur/                      # 上游 Arch 包（原样保留）
 ├── gui/                      # 图形管理器（GTK4/libadwaita，Python）
 ├── helper/oms-import.c       # 特权助手源码（芯片模板管理）
+├── pam/                      # PAM 集成修复（锁屏/登录/重试；含 apply-pam-fixes.sh）
 ├── deb/build-deb.sh          # deb 打包脚本
 ├── dist/                     # 预构建 deb（Releases 同款）
 └── LICENSE                   # LGPL-2.1
@@ -159,7 +174,7 @@ sudo rm -rf /var/lib/fprint/$USER         # 清理 fprintd 存储记录（可选
 
 ---
 
-## 八、来源与致谢
+## 九、来源与致谢
 
 - **驱动逆向实现**：[BlueApple233/OMS-fingerprint-linux](https://github.com/BlueApple233/OMS-fingerprint-linux)（LGPL-2.1）——`omsmoc` 驱动、协议分析、umockdev 回放测试均来自该项目；
 - 本仓库在其基础上增加：Ubuntu deb 打包、图形管理器、`oms-import` 模板管理工具、文档；
